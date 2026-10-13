@@ -1,0 +1,340 @@
+name: git
+title: Git 管理
+version: 1.4.0
+description: 在文件管理器当前目录里管理 Git 仓库（状态 / 暂存 / 提交 / 推送 / 储藏 / 标签 / 合并变基 / 回退 / 分支维护 / 身份、远程与 SSH 密钥设置）
+author: zap
+
+# user = 以「调用方面板用户」的 Linux 账号执行（不再是 root），避免 git 把仓库文件
+# 改成 root 所有、产生权限问题；工作目录由文件管理器通过 options.cwd 传入。
+scope: user
+
+# 依赖声明：装之前先确认服务器上有 git，别等到点了按钮才报 command not found
+requires:
+  commands: [git]
+
+# 自带界面：同时挂在两个槽位 ——
+#   file.editor     文件编辑器 / 文件管理器顶部工具栏
+#   file.context    文件管理器右键菜单（把选中的文件路径带给插件）
+ui:
+  placement:
+    - file.editor
+    - file.context
+  label: Git
+  icon: material-symbols:deployed-code
+  html: ui.html
+
+# 声明若干入口，HTML 里用 zap.call('<action>', {...}) 分别调用；
+# main.lua 里统一由 on_run 按 ctx.action 分发（也支持显式 on_<action>）。
+#
+# 协议：repo / log / branch / config_get 返回**单行 JSON**（前端 JSON.parse 后渲染页签），
+# 其余返回可直读的文本；写操作（add / commit / push …）返回一行摘要，前端据此刷新 repo。
+actions:
+  status: 状态
+  repo: 仓库快照
+  log: 日志
+  diff: 差异
+  add: 暂存
+  unstage: 取消暂存
+  # 危险 / 破坏性动作：宿主执行前弹一次确认，只读演示账号在后端被直接拒绝
+  restore: { label: 放弃修改, dangerous: true }
+  commit: 提交
+  branch: 分支列表
+  checkout: 切换分支
+  branch_create: 新建分支
+  # 网络类动作用 action 级 async：只把这几个长操作变成可订阅日志流 + 可取消，
+  # 其余读写保持同步（插件整体不用设 async: true）
+  pull: { label: 拉取, async: true }
+  push: { label: 推送, async: true }
+  fetch: { label: 获取, async: true }
+  init: 初始化
+  clone: { label: 克隆仓库, async: true }
+  stash_list: 储藏列表
+  stash_save: 储藏改动
+  stash_apply: 应用储藏
+  stash_pop: 弹出储藏
+  stash_drop: { label: 删除储藏, dangerous: true }
+  tag_list: 标签列表
+  tag_create: 打标签
+  tag_push: { label: 推送标签, async: true }
+  tag_delete: { label: 删除标签, dangerous: true }
+  merge: 合并分支
+  merge_continue: 继续合并
+  merge_abort: { label: 中止合并, dangerous: true }
+  rebase: 变基
+  rebase_continue: 继续变基
+  rebase_abort: { label: 中止变基, dangerous: true }
+  reset: { label: 回退到某次提交, dangerous: true }
+  revert: 回滚某次提交
+  branch_delete: { label: 删除分支, dangerous: true }
+  branch_rename: 重命名分支
+  branch_delete_remote: { label: 删除远程分支, async: true, dangerous: true }
+  ignore: 写入 .gitignore
+  blame: 逐行作者
+  config: 保存身份
+  config_get: 读取身份
+  remote: 设置远程
+  remote_remove: 删除远程
+  ssh_keys: SSH 密钥清单
+  ssh_use: 设置 Git 使用的 SSH 密钥
+  ssh_clear: 清除 core.sshCommand
+  ssh_test: 测试 SSH 连接
+  redeploy: 重新部署
+
+# 多语言：基准字段写中文，这里给一份 en-US 覆盖层。
+# 面板语言切换（与 Element Plus 同一套）时，列表里的标题 / 描述 / 入口文案 /
+# 动作名会自动换成对应语言；没翻到的键保留基准值，所以可以慢慢补齐。
+i18n:
+  en-US:
+    title: Git manager
+    description: Manage Git repositories from the file manager — status, staging, commits, push, stash, tags, merge/rebase, reset, branch upkeep, plus identity, remote and SSH key settings
+    label: Git
+    actions:
+      status: Status
+      repo: Snapshot
+      log: Log
+      diff: Diff
+      add: Stage
+      unstage: Unstage
+      restore: Discard changes
+      commit: Commit
+      branch: Branches
+      checkout: Switch branch
+      branch_create: New branch
+      pull: Pull
+      push: Push
+      fetch: Fetch
+      init: Initialize
+      clone: Clone repository
+      stash_list: Stashes
+      stash_save: Stash changes
+      stash_apply: Apply stash
+      stash_pop: Pop stash
+      stash_drop: Drop stash
+      tag_list: Tags
+      tag_create: Create tag
+      tag_push: Push tags
+      tag_delete: Delete tag
+      merge: Merge
+      merge_continue: Continue merge
+      merge_abort: Abort merge
+      rebase: Rebase
+      rebase_continue: Continue rebase
+      rebase_abort: Abort rebase
+      reset: Reset to a commit
+      revert: Revert a commit
+      branch_delete: Delete branch
+      branch_rename: Rename branch
+      branch_delete_remote: Delete remote branch
+      ignore: Write .gitignore
+      blame: Blame
+      config: Save identity
+      config_get: Load identity
+      remote: Set remote
+      remote_remove: Remove remote
+      ssh_keys: SSH keys
+      ssh_use: Use SSH key
+      ssh_clear: Clear core.sshCommand
+      ssh_test: Test SSH connection
+      redeploy: Redeploy
+    ui:
+      "SSH 密钥（git 走 ssh 远程时用哪把钥匙）": "SSH key (which key git uses for ssh remotes)"
+      "hard（丢弃改动，不可恢复）": "hard (discards changes, unrecoverable)"
+      "mixed（保留改动在工作区）": "mixed (keeps changes in working tree)"
+      "soft（保留改动在暂存区）": "soft (keeps changes staged)"
+      "中止": "Abort"
+      "仓库": "Repository"
+      "仓库地址（https / git@… / 本地路径）": "Repository URL (https / git@… / local path)"
+      "仓库地址（https / git@…）": "Repository URL (https / git@…)"
+      "保存": "Save"
+      "保存身份": "Save identity"
+      "储藏": "Stash"
+      "储藏 / 标签": "Stash / Tags"
+      "储藏全部改动": "Stash all changes"
+      "储藏说明（可留空）": "Stash message (optional)"
+      "储藏（临时收起工作区改动）": "Stash (temporarily shelve working changes)"
+      "克隆": "Clone"
+      "克隆仓库到当前目录": "Clone repository into current directory"
+      "克隆到「目录」输入框指定位置的子目录": "Clone into a subfolder of the path in the 'Directory' box"
+      "全局：": "Global: "
+      "写入全局配置（--global）": "Write global config (--global)"
+      "写入全局（--global）": "Write global (--global)"
+      "冲突待解决": "Conflicts to resolve"
+      "分支": "Branch"
+      "分支图": "Branch graph"
+      "切换": "Switch"
+      "初始分支名（可留空用 git 默认）": "Initial branch name (blank = git default)"
+      "初始化仓库": "Initialize repository"
+      "删除分支": "Delete branch"
+      "删除的是远程上的分支，本地分支不受影响": "Deletes the branch on the remote only; local branch is unaffected"
+      "删除该储藏？删除后无法恢复。": "Delete this stash? This cannot be undone."
+      "删除远程分支": "Delete remote branch"
+      "刷新": "Refresh"
+      "刷新日志": "Refresh log"
+      "加入 .gitignore": "Add to .gitignore"
+      "勾选了「只提交选中文件」但没有勾任何文件": "Checked 'commit selected only' but no file is selected"
+      "取消全部已暂存的变更？（文件内容保留）": "Unstage all changes? (file contents kept)"
+      "取消全部暂存": "Unstage all"
+      "取消暂存选中": "Unstage selected"
+      "变基": "rebase"
+      "变基拉取（--rebase）": "Rebase pull (--rebase)"
+      "变基进行中": "Rebasing"
+      "变更": "Changes"
+      "只提交选中的文件": "Commit only selected files"
+      "只看某个文件的历史（可留空）": "History of a specific file (optional)"
+      "可到「个人中心 → 我的 SSH 密钥」生成 / 导入": "Go to 'Profile -> My SSH keys' to generate / import"
+      "合并": "merge"
+      "合并进行中": "Merging"
+      "同步": "Sync"
+      "名称": "Name"
+      "含未跟踪文件": "Includes untracked files"
+      "回滚提交": "Revert commit"
+      "回滚此提交（revert）": "Revert this commit (revert)"
+      "回退": "Reset"
+      "回退（改写历史，谨慎）": "Reset (rewrites history - be careful)"
+      "地址": "Address"
+      "失败": "Failed"
+      "如 Your Name": "e.g. Your Name"
+      "如 you@example.com": "e.g. you@example.com"
+      "完成": "Done"
+      "密钥目录：": "SSH key dir: "
+      "尚未配置远程仓库，请到「设置」页添加": "No remote configured - add one on the 'Settings' tab"
+      "就绪": "Ready"
+      "工作区": "Working tree"
+      "工作目录（默认文件管理器当前目录）": "Working directory (defaults to file manager directory)"
+      "已暂存（待提交）": "Staged (to be committed)"
+      "已选：": "Selected: "
+      "已选：—": "Selected: -"
+      "干净": "Clean"
+      "应用": "Apply"
+      "强制删除（-D，丢弃未合并提交）": "Force delete (-D, drops unmerged commits)"
+      "强制推送（--force-with-lease）": "Force push (--force-with-lease)"
+      "强制推送（--force-with-lease）：若远端已被他人更新，推送会被拒绝。确定？": "Force push (--force-with-lease): if the remote was updated by someone else, the push is rejected. Continue?"
+      "当前仓库未设置身份，提交时 git 会报错": "No identity set for this repo; git will error on commit"
+      "当前分支没有上游，推送时请勾选「设为上游」": "Current branch has no upstream - check 'Set upstream' when pushing"
+      "当前命令里没解析出 -i 路径": "No -i path resolved from the current command"
+      "打标签": "Create tag"
+      "执行中…": "Running..."
+      "把当前分支回退到": "Reset current branch to "
+      "拉取": "Pull"
+      "拣选进行中": "Cherry-picking"
+      "指向的提交（留空 = HEAD）": "Target commit (blank = HEAD)"
+      "指定分支（-b，可留空）": "Branch (-b, optional)"
+      "推送": "Push"
+      "推送全部标签": "Push all tags"
+      "提交": "Commit"
+      "提交 / 推送": "Commit / Push"
+      "提交信息（必填）": "Commit message (required)"
+      "提交已暂存": "Commit staged"
+      "提交身份": "Commit identity"
+      "插件返回了非 JSON 内容：": "Plugin returned non-JSON content: "
+      "放弃这": "Discard changes to "
+      "放弃选中修改": "Discard selected changes"
+      "新分支名": "New branch name"
+      "新建并切换": "Create and switch"
+      "日志": "Log"
+      "暂存全部": "Stage all"
+      "暂存区为空，先在「状态」页暂存文件": "Staging area is empty - stage files on the 'Status' tab first"
+      "暂存选中": "Stage selected"
+      "暂无远程仓库": "No remote repositories"
+      "有变更": "Has changes"
+      "未暂存": "Unstaged"
+      "未能读取初始状态，请手动填写目录后点「应用」": "Couldn't read initial state - fill the directory manually and click 'Apply'"
+      "未设置": "Not set"
+      "未设置上游": "No upstream"
+      "未跟踪": "Untracked"
+      "未通过认证，见输出": "Authentication failed - see output"
+      "标签": "Tag"
+      "标签名，如 v1.0.0": "Tag name, e.g. v1.0.0"
+      "模式": "Mode"
+      "正在执行": "Running "
+      "正在测试 SSH 连接…": "Testing SSH connection..."
+      "浅克隆深度（可留空）": "Shallow clone depth (optional)"
+      "测试地址": "Test address"
+      "测试连接": "Test connection"
+      "清除": "Clear"
+      "清除 core.sshCommand？此后 git 改用 ssh 默认密钥 / agent。": "Clear core.sshCommand? git will then use the default ssh key / agent."
+      "点击某条提交可查看它的完整 diff": "Click a commit to view its full diff"
+      "状态": "Status"
+      "留空 = 当前分支": "Blank = current branch"
+      "留空则从 origin 推导，如 git@github.com": "Blank to infer from origin, e.g. git@github.com"
+      "目录": "Directory"
+      "目标": "Target"
+      "目标目录（留空用仓库名）": "Target directory (blank = repo name)"
+      "继续": "Continue"
+      "自动储藏（--autostash）": "Auto-stash (--autostash)"
+      "获取远端更新": "Fetch updates"
+      "认证成功": "Authentication succeeded"
+      "设为 Git 使用的密钥": "Set as the SSH key for git"
+      "设为上游（-u）": "Set upstream (-u)"
+      "设置": "Settings"
+      "该仓库还没有远程": "This repository has no remote yet"
+      "该目录不是 Git 仓库。": "This directory is not a Git repository."
+      "请先勾选要取消暂存的文件": "Select files to unstage first"
+      "请先勾选要忽略的文件": "Select files to ignore first"
+      "请先勾选要放弃修改的文件": "Select files to discard first"
+      "请先勾选要暂存的文件": "Select files to stage first"
+      "请先在上方点选一条提交": "Select a commit above first"
+      "请先在变更列表里勾选一个文件": "Select a file in the changes list first"
+      "请先选择分支": "Select a branch first"
+      "请先选择要使用的 SSH 密钥": "Select an SSH key to use first"
+      "请先选择要删除的分支": "Select a branch to delete first"
+      "请先选择要重命名的分支": "Select a branch to rename first"
+      "请填写仓库地址": "Enter the repository URL"
+      "请填写提交信息": "Enter a commit message"
+      "请填写新分支名": "Enter a new branch name"
+      "请填写标签名": "Enter a tag name"
+      "输出": "Output"
+      "远程": "Remote"
+      "远程仓库": "Remote repository"
+      "远程同步": "Remote sync"
+      "远程名（默认 origin）": "Remote name (default origin)"
+      "追加到上一次提交（--amend）": "Amend last commit (--amend)"
+      "追加到上一次提交（--amend）会改写最近一次提交，已推送过的分支慎用。确定？": "Amend last commit (--amend) rewrites the most recent commit; avoid on pushed branches. Continue?"
+      "逐行作者": "Blame"
+      "重命名": "Rename"
+      "重命名为": "Rename to"
+      "附注说明（留空 = 轻量标签）": "Annotation (blank = lightweight tag)"
+      "面板储藏": "Panel stash"
+      "领先 / 落后": "Ahead / Behind"
+      "默认": "Default"
+      "（强制，未合并的提交会丢失）": " (force: unmerged commits will be lost)"
+      "（当前仓库无分支）": "(this repository has no branches)"
+      "（操作结果会显示在这里）": "(operation results show here)"
+      "（无输出）": "(no output)"
+      "（未设置，走 ssh 默认密钥 / agent）": "(not set - uses default ssh key / agent)"
+      "（游离 HEAD）": "(detached HEAD)"
+      "（读取中…）": "(loading...)"
+      "（选中提交后显示 diff）": "(diff shows after selecting a commit)"
+      "（选好密钥点「设为 Git 使用的密钥」，即写入 core.sshCommand）": "After picking a key, click 'Set as the SSH key for git' to write core.sshCommand"
+      "：解决冲突 → 在下面「变更」里暂存 → 点「继续」；想放弃就点「中止」。": ": resolve conflicts -> stage in the Changes below -> click Continue; or click Abort to give up."
+      "？会新增一个反向提交（不改写历史）。": "? Adds a reverse commit (history preserved)."
+      "？此操作会影响其他人。": "? This affects others."
+      "中止变基？会回到变基前的状态。": "Abort rebase? Returns to the pre-rebase state."
+      "中止合并？会回到合并前的状态。": "Abort merge? Returns to the pre-merge state."
+      "上游": "Upstream"
+      "删除远程「": "Delete remote \""
+      "删除分支「": "Delete branch \""
+      "删除标签「": "Delete tag \""
+      "」？（同时会尝试删除远程同名标签）": "\"? (also tries to delete the remote tag)"
+      " 进行中": " in progress"
+      " 个文件的本地修改？该操作不可撤销。": " file(s)' local changes? This cannot be undone."
+      " 之后的提交与所有未提交改动，且不可恢复。确定？": "'s commits and all uncommitted changes, irreversibly. Continue?"
+      "（--": " (--"
+      "）？": ")?"
+      "无": "None"
+      "没有储藏": "No stashes"
+      "还没有提交记录": "No commits yet"
+      "还没有标签": "No tags yet"
+      "（尚无提交）": "(no commits)"
+      "（~/.ssh 下没有可用私钥）": "(no usable private key under ~/.ssh)"
+      "删除": "Delete"
+      "弹出": "Pop"
+      "正在执行 ": "Running "
+      "…": "..."
+      "」？": "\"?\""
+      "放弃这 ": "Discard changes to "
+      "hard 回退会丢弃 ": "Hard reset discards "
+      "把当前分支回退到 ": "Reset current branch to "
+      "回滚提交 ": "Revert commit "
+      "删除远程分支 ": "Delete remote branch "
+      "面板储藏 ": "Panel stash "

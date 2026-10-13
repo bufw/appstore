@@ -1,0 +1,52 @@
+name: mysql
+title: MySQL / MariaDB
+version: [9.7.2,8.4.11,8.0.46,12.3.3,11.8.9,10.11.19]
+category: database
+description: MySQL and MariaDB are popular open-source relational database management systems. This app provides installation, upgrade, and uninstallation scripts for both MySQL and MariaDB families.
+icon: mysql.png
+tags: [mysql,mariadb,db]
+allow_multiple_instances: 'no'
+scripts:
+  install: install.sh
+version_meta:
+  "9.7.2":    { family: mysql,    label: MySQL (LTS 2034/04),    group: MySQL Community Server }
+  "8.4.11":   { family: mysql,    label: MySQL (LTS 2032/04),    group: MySQL Community Server }
+  "8.0.46":   { family: mysql,    label: MySQL (no LTS),    group: MySQL Community Server }
+  "12.3.3":   { family: mariadb,  label: MariaDB (LTS 2029/06),  group: MariaDB Server }
+  "11.8.9":   { family: mariadb,  label: MariaDB (LTS 2028/06),  group: MariaDB Server }
+  "10.11.19": { family: mariadb,  label: MariaDB (LTS 2028/02),  group: MariaDB Server }
+options:
+  install:
+    # intro
+    intro: >-
+      Install wizard applies to both MySQL and MariaDB families. Symbolic links
+      are created only for the MySQL family; MariaDB keeps its own binaries in
+      its install directory.
+    items:
+      - name: SET_DEFAULT
+        label: Symbolic Link
+        type: bool
+        default: false
+        desc: If checked, symbolic links will be created in /usr/local/bin (mysql / mysqldump / myisamchk). Only applies to MySQL family.
+  upgrade:
+    intro: >-
+      Upgrade preserves your data: zap runs the uninstall script (data and
+      /etc/mysql are copied to /root/zap_bak/) and then installs the target
+      version. Options below apply to both steps.
+    items:
+      - name: SET_DEFAULT
+        label: Symbolic Link
+        type: bool
+        default: false
+        desc: If checked, symbolic links will be created in /usr/local/bin (mysql / mysqldump / myisamchk). Only applies to MySQL family.
+  uninstall:
+    intro: >-
+      Uninstall stops the mysql/mariadb service and removes the install
+      directory together with /etc/mysql. Your data directory is copied to
+      /root/zap_bak/<family>/ before removal — unless you disable backup below.
+    items:
+      - name: BACKUP_DATA
+        label: Backup Data
+        type: bool
+        default: true
+        desc: If checked, data and config are backed up to /root/zap_bak/<family>/ before the install directory is removed.

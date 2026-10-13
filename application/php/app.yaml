@@ -1,0 +1,37 @@
+name: php
+title: PHP
+version: [8.5.10,8.4.25,8.3.33,7.4.33]
+category: application
+description: PHP is a server-side scripting language designed for web development.
+icon: php.png
+tags: [php]
+allow_multiple_instances: 'yes'
+actions:
+  build: 编译安装
+scripts:
+  install: install.sh
+  uninstall: uninstall.sh
+options:
+  build:
+    intro: >-
+      请选择安装选项
+    items:
+      - name: SET_DEFAULT
+        label: 设为全局默认 PHP
+        type: bool
+        default: false
+        desc: 注册php到 /usr/local/bin,所有用户执行 php 命令默认使用本版本；可在「服务配置 → PHP」页切换)。
+      - name: EXTS
+        type: multiselect
+        title: 扩展
+        desc: 选择需要安装的扩展
+        choices:
+          - label: bcmath
+            value: bcmath
+          - label: calendar
+            value: calendar
+          - label: exif
+            value: exif
+          - label: fileinfo
+            value: fileinfo
+        
