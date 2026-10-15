@@ -1,19 +1,19 @@
 #!/bin/bash
-# phpMyAdmin 卸载脚本（zap appstore 调用）
+# phpMyAdmin uninstall script (invoked by the zap appstore)
 #
-# 依赖环境变量（由 zapexec 注入）：ZAP_PATH APPS_DIR APP_PATH APP_VERSION
-#                                  MAJOR_VERSION MINOR_VERSION
+# Injected environment variables (provided by zapexec): ZAP_PATH APPS_DIR APP_PATH APP_VERSION
+#                                                       MAJOR_VERSION MINOR_VERSION
 #
-# 安全策略（核心：绝不误删其它目录）
-#   1. 安装目录一律以 info.yaml 登记的 install_dir 为准，软链仅作回退；
-#   2. 目标必须是 APPS_DIR（/usr/local/apps）的**直接子目录**；
-#   3. 空值 / 根路径 / APPS_DIR 自身 / 越界路径，一律拒绝删除；
-#   4. 删除前再做一次状态复核，任一环节不满足立即中止。
+# Safety policy (core principle: never accidentally delete other directories)
+#   1. The install dir always follows install_dir recorded in info.yaml; the symlink is only a fallback;
+#   2. The target must be a DIRECT child of APPS_DIR (/usr/local/apps);
+#   3. Empty value / root path / APPS_DIR itself / out-of-bounds path -> all rejected for deletion;
+#   4. Re-verify state once more before deleting; abort immediately if any check fails.
 #
-# 用到的通用函数 normalize_dir / yaml_value / assert_under_apps_dir
-# 均来自 ${ZAP_PATH}/scripts/zap/bash_utils.sh，其它应用包可直接复用。
+# The shared helpers normalize_dir / yaml_value / assert_under_apps_dir
+# all come from ${ZAP_PATH}/scripts/zap/bash_utils.sh and can be reused by other app packages.
 #
-# 说明：仅删除程序目录与软链，不触碰数据库数据。
+# Note: only the program directory and symlink are removed; database data is never touched.
 set -euo pipefail
 
 source "${ZAP_PATH}/scripts/zap/bash_utils.sh"
@@ -23,44 +23,44 @@ APP_TITLE="phpMyAdmin"
 LINK_DIR="${APPS_DIR}/phpmyadmin"
 INFO_FILE="${APP_PATH}/info.yaml"
 
-# ── 主流程 ──────────────────────────────────────────────────
+# ── main flow ──────────────────────────────────────────────────
 
-# 安装目录：info.yaml 登记优先，软链指向次之（通用函数，见 bash_utils.sh）
+# Install dir: info.yaml registration first, symlink target second (shared helper, see bash_utils.sh)
 INSTALL_DIR="$(resolve_install_dir "${INFO_FILE}" "${LINK_DIR}")"
 
 if [ -z "${INSTALL_DIR}" ]; then
-    log_error "未能确定安装目录（info.yaml 缺失且软链不存在），中止卸载"
+    log_error "Could not determine the install directory (info.yaml missing and symlink absent); aborting uninstall"
     exit 1
 fi
 
-log_info "准备卸载 ${APP_TITLE}（安装目录 ${INSTALL_DIR}）"
+log_info "Preparing to uninstall ${APP_TITLE} (install dir ${INSTALL_DIR})"
 
-# 目录已不在：只清理残留软链后正常结束（幂等）
+# Directory already gone: just clean up the stale symlink and finish normally (idempotent)
 if [ ! -d "${INSTALL_DIR}" ] && [ ! -L "${INSTALL_DIR}" ]; then
-    log_warn "安装目录不存在（可能已被清理）：${INSTALL_DIR}"
+    log_warn "Install directory does not exist (may have been cleaned already): ${INSTALL_DIR}"
     if [ -L "${LINK_DIR}" ]; then
         rm -f "${LINK_DIR}"
-        log_ok "已移除失效软链：${LINK_DIR}"
+        log_ok "Removed the stale symlink: ${LINK_DIR}"
     fi
-    log_ok "${APP_TITLE} uninstalling successful"
+    log_ok "${APP_TITLE} uninstalled successfully"
     exit 0
 fi
 
-# 删除前的安全校验：必须位于 APPS_DIR 之下且是其直接子目录
+# Pre-delete safety check: must be under APPS_DIR and a direct child of it
 assert_under_apps_dir "${INSTALL_DIR}" "${APPS_DIR}" || exit 1
 
-# 移除软链
+# Remove the symlink
 if [ -L "${LINK_DIR}" ]; then
     rm -f "${LINK_DIR}"
-    log_ok "已移除软链：${LINK_DIR}"
+    log_ok "Removed the symlink: ${LINK_DIR}"
 fi
 
-# 删除前最后一道校验
+# Final check before deletion
 [ -d "${INSTALL_DIR}" ] || {
-    log_error "目录状态已变化，中止删除：${INSTALL_DIR}"
+    log_error "Directory state changed, aborting deletion: ${INSTALL_DIR}"
     exit 1
 }
 rm -rf "${INSTALL_DIR}"
-log_ok "已删除安装目录：${INSTALL_DIR}"
+log_ok "Removed the install directory: ${INSTALL_DIR}"
 
-log_ok "${APP_TITLE} uninstalling successful"
+log_ok "${APP_TITLE} uninstalled successfully"
