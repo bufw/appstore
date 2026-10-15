@@ -1,26 +1,23 @@
 #!/bin/bash
-# PHP 编译安装脚本（zap appstore 调用）
-# 依赖环境变量（由 zapexec 注入）：ZAP_PATH APPS_DIR PKG_PATH APP_PATH APP_VERSION MAJOR_VERSION MINOR_VERSION BUILD_PATH CPU_NUM ZAP_DATA_PATH
-# 可选（options.build，值原样注入）：
-#   EXTS        多选，空格拼接 —— 如 "bcmath calendar exif"
-#   SET_DEFAULT bool —— "true"（默认）注册为系统全局默认；"false" 不触碰 /usr/local/bin
+# PHP Compile & Install Script for AppStore
+# inject vars：ZAP_PATH APPS_DIR PKG_PATH APP_PATH APP_VERSION MAJOR_VERSION MINOR_VERSION BUILD_PATH CPU_NUM ZAP_DATA_PATH
 #
-# 版本兼容性提示：
-#   PHP 7.0 要求 OpenSSL >= 0.9.8, < 1.2
-#   PHP 7.1-8.0 要求 OpenSSL >= 1.0.1, < 3.0
-#   PHP >= 8.1 要求 OpenSSL >= 1.0.2, < 4.0
+#   EXTS         multi-select, space-joined —— e.g. "bcmath calendar exif"
+#   SET_DEFAULT true = /usr/local/bin/php
+#
+#  PHP version compatibility (openssl requirement):
+#   PHP 7.4.33 require OpenSSL = 1.1.1w
+#   PHP 8.0     require OpenSSL = 1.1.1w
+#   PHP >= 8.1 require OpenSSL >=3
 set -euo pipefail
 
 source "${ZAP_PATH}/scripts/zap/bash_utils.sh"
 
-# ── 编译依赖 ───────────────────────────────────────────────
-# 逐个安装：apt 只要有一个包名找不到就整条命令失败、一个都不装，
-# 所以不能写成 `apt-get install -y <一长串> || true`（那样等于静默全不装）。
-# 单个依赖缺失在 configure / make 阶段会暴露，故只告警、不中断。
+# ── dependency install ───────────────────────────────────────
 PKG_MGR="$(pkg_manager || true)"
 case "${PKG_MGR}" in
     apt)
-        apt-get update -y >/dev/null 2>&1 || log_warn "apt-get update 失败(继续尝试安装)"
+        apt-get update -y >/dev/null 2>&1 || log_warn "apt-get update failed (continuing the install attempt)"
         for p in libxml2-dev libsqlite3-dev libcurl4-openssl-dev libjpeg-dev libwebp-dev \
                  libpng-dev libonig-dev libicu-dev libzip-dev libpq-dev zlib1g-dev pkg-config; do
             pkg_install_any apt "$p" || true
@@ -34,19 +31,17 @@ case "${PKG_MGR}" in
         done
         ;;
     *)
-        log_warn "未识别的包管理器：请自行确认编译依赖已安装"
+        log_warn "Unrecognized package manager: make sure the build dependencies are installed manually"
         ;;
 esac
 
-# ── 前置：运行用户 www（php-fpm 以 www 运行）+ 目录 + 首次系统编译依赖 ──────
+# ── php-fpm www ──────
 prepare_install_env www
 
-# ── 低版本 PHP 需要 openssl 1.1 ───────────────────────────
-# PHP 7.x-8.0 仅兼容 OpenSSL < 3.0,必须链 1.1 实例:
-#   * export PKG_CONFIG_PATH 指向 1.1 实例(其 openssl.pc 的 prefix/libdir 均
-#     指向实例自身,供 ext 的 pkg-config 检查与 >= 8.1 走 pkg-config 时使用);
-#   * PHP 7.x configure 额外支持 --with-openssl=<DIR> 前缀形式:头文件与链接
-#     库直接取自该实例,完全不受系统 pkg-config 默认(3.x)影响,最稳。
+# ── PHP <= 8.0 uses openssl 1.1 ───────────────────────────
+# PHP 7.x-8.0 OpenSSL < 3.0 , require openssl 1.1 :
+#   * export PKG_CONFIG_PATH
+#   * PHP 7.x configure  --with-openssl=<DIR>
 OPENSSL_OPTS="--with-openssl"
 if [[ "${APP_VERSION}" < "8.1.0" ]]; then
     if [ ! -d "${APPS_DIR}/openssl1.1" ]; then
@@ -55,18 +50,15 @@ if [[ "${APP_VERSION}" < "8.1.0" ]]; then
     fi
     export PKG_CONFIG_PATH="${APPS_DIR}/openssl1.1/lib/pkgconfig"
     OPENSSL_OPTS="--with-openssl=${APPS_DIR}/openssl1.1"
-    # 运行期定位:把 1.1 实例的 lib 写进 php/php-fpm 的 RUNPATH,不依赖系统 ld.so.cache,
-    # 也就不受「openssl 实例卸载后 ld.so.conf 片段被删」影响。
-    # 注:下面的 --disable-rpath 只清 PHP 自己生成的 rpath,不会剥离这里显式传入的
-    # -Wl,-rpath,两者可共存(正是我们想要的:只硬编码 openssl 路径)。
+    # add rpath to php-fpm binary, so that it can find openssl1.1 at runtime without relying on ldconfig
     export LDFLAGS="${LDFLAGS:+$LDFLAGS }-Wl,-rpath,${APPS_DIR}/openssl1.1/lib -L${APPS_DIR}/openssl1.1/lib"
 fi
 log_info "PKG_CONFIG_PATH: ${PKG_CONFIG_PATH:-} | OPENSSL_OPTS: ${OPENSSL_OPTS}"
 
 PHP_VERSION="${APP_VERSION}"
-# 版本短名 = 主版本号+次版本号直接拼接(不带点):8.5.33 → 85。
-# 由此派生出 目录 php-85 / 服务 php-fpm-85 / sock、pid php-fpm-85.sock、.pid,
-# 与 zapd/zapexec 的命名约定一致(php85 → /var/run/php-fpm-85.sock)。
+# Short version name = major + minor concatenated without a dot: 8.5.33 → 85.
+# This derives the directory php-85 / service php-fpm-85 / sock & pid php-fpm-85.sock, .pid,
+# matching the naming convention in zapd/zapexec (php85 → /var/run/php-fpm-85.sock).
 PHP_SHORT_VERSION="${MAJOR_VERSION}${MINOR_VERSION}"
 PHP_DOWNLOAD_URL="$(pkg_mirror)/php/php-${PHP_VERSION}.tar.gz"
 PHP_DOWNLOAD_NAME="php-${PHP_VERSION}.tar.gz"
@@ -82,16 +74,16 @@ if [ ! -f "${PHP_DOWNLOAD_NAME}" ]; then
     download_file "${PHP_DOWNLOAD_URL}" "${PHP_DOWNLOAD_NAME}"
 fi
 
-log_info "unpacking PKGs"
+log_info "Extracting packages"
 rm -rf "${BUILD_PATH}"
 mkdir -p "${BUILD_PATH}"
 tar -xzf "${PHP_DOWNLOAD_NAME}" -C "${BUILD_PATH}"
 
-# ── 编译安装 ───────────────────────────────────────────────
+# ── build & install ───────────────────────────────────────
 log_info "building PHP ${APP_VERSION}"
 cd "${BUILD_PATH}/php-${APP_VERSION}"
 
-# GD 相关选项随版本差异：PHP 7.x 用 --with-jpeg-dir，8.0 起用 --with-jpeg，8.1 起支持 --with-webp
+# GD-related options vary by version: PHP 7.x uses --with-jpeg-dir, 8.0+ uses --with-jpeg, 8.1+ supports --with-webp
 GD_OPT="--enable-gd"
 if [[ "${MAJOR_VERSION}" == "7" ]]; then
     GD_OPT="${GD_OPT} --with-jpeg-dir"
@@ -102,8 +94,11 @@ else
     fi
 fi
 
-# ── 用户可选扩展（options.build 的 EXTS 多选，勾选值按空格拼接注入 $EXTS）──
-# 逐个展开为 --enable-<ext> 追加到 configure；choices value 即开关名，白名单外跳过
+# ── User-selectable extensions (the EXTS multi-select from options; checked values are
+#    space-joined into $EXTS) ──
+# Expanded one by one into --enable-<ext> and appended to configure; the choice value is the
+# switch name, anything outside the allowlist is skipped
+REQUIRE_PG=0
 EXT_OPTS=()
 if [ -n "${EXTS:-}" ]; then
     read -r -a _exts <<< "${EXTS}"
@@ -111,12 +106,25 @@ if [ -n "${EXTS:-}" ]; then
         case "${_e}" in
             bcmath|calendar|exif|fileinfo)
                 EXT_OPTS+=(--enable-${_e}) ;;
+            pdo_postgresql)
+                REQUIRE_PG=1
+                EXT_OPTS+=(--with-pdo-pgsql) ;;
             *)
-                log_warn "未识别的扩展「${_e}」，已跳过" ;;
+                log_warn "Unrecognized extension \"${_e}\", skipped" ;;
         esac
     done
+    if [ ${REQUIRE_PG} -eq 1 ]; then
+        #install pgsql-devel
+        if [ "${PKG_MGR}" = "apt" ]; then
+            pkg_install_any apt postgresql-server-dev-all || true
+        elif [ "${PKG_MGR}" = "dnf" ] || [ "${PKG_MGR}" = "yum" ]; then
+            pkg_install_any "${PKG_MGR}" postgresql-devel || true
+        else
+            log_warn "Unrecognized package manager: make sure the PostgreSQL development package is installed manually"
+        fi
+    fi
     if [ ${#EXT_OPTS[@]} -gt 0 ]; then
-        log_info "本次安装启用扩展: ${EXTS}"
+        log_info "Extensions enabled for this install: ${EXTS}"
     fi
 fi
 
@@ -128,6 +136,7 @@ fi
     --enable-sysvshm \
     --enable-pcntl \
     --enable-fpm \
+    --disable-cgi \
     --with-fpm-user=www \
     --with-fpm-group=www \
     ${OPENSSL_OPTS} \
@@ -142,6 +151,10 @@ fi
     --with-pdo-mysql=mysqlnd \
     --enable-mbstring \
     --enable-intl \
+    --enable-bcmath \
+    --enable-calendar \
+    --enable-exif \
+    --enable-fileinfo \
     "${EXT_OPTS[@]}"
 
 log_info "make install"
@@ -152,20 +165,22 @@ if [ ! -d "${PHP_INSTALL_PATH}" ]; then
     exit 1
 fi
 
-# ── openssl 运行期定位自检(仅 7.x-8.0)────────────────────────────
-# 链接期有 -L 就一定成功,失败只会在运行时暴露(php-fpm 起不来),故这里立即校验 RUNPATH。
+# ── openssl runtime location self-check (7.x-8.0 only) ─────────────────
+# Linking with -L always succeeds, but failure only surfaces at runtime (php-fpm won't start),
+# so verify the RUNPATH right here.
 if [[ "${APP_VERSION}" < "8.1.0" ]] && command -v readelf >/dev/null 2>&1; then
     if readelf -d "${PHP_INSTALL_PATH}/sbin/php-fpm" 2>/dev/null | grep -q "openssl1\.1"; then
-        log_ok "php-fpm 已内联 openssl1.1 运行期路径(RUNPATH),不依赖系统 ldconfig"
+        log_ok "php-fpm has openssl1.1 runtime path inlined (RUNPATH); not relying on system ldconfig"
     else
-        log_warn "php-fpm 未写入 openssl1.1 的 RUNPATH,运行期只能靠 ldconfig 缓存;请确认 /etc/ld.so.conf.d/zap-openssl-1.conf 存在并执行 ldconfig"
+        log_warn "php-fpm has no openssl1.1 RUNPATH; at runtime it must rely on the ldconfig cache. Ensure /etc/ld.so.conf.d/zap-openssl-1.conf exists and run ldconfig"
     fi
 fi
 
-# ── 配置文件 ───────────────────────────────────────────────
+# ── Config files ───────────────────────────────────────────────
 mkdir -p "${PHP_INSTALL_PATH}/etc/php.d"
-# php.ini：优先官方模板，缺失时回退，保证面板"服务配置 → PHP"始终有可编辑的主配置
-# （PHP 没有 php.ini 也能跑，会退回内置默认值，导致面板探测不到配置）
+# php.ini: prefer the official template, fall back when missing, so the panel's "Service config → PHP"
+# always has an editable main config (PHP can run without php.ini and falls back to built-in defaults,
+# which would make the panel unable to detect the config)
 if [ -f "${BUILD_PATH}/php-${APP_VERSION}/php.ini-production" ]; then
     cp "${BUILD_PATH}/php-${APP_VERSION}/php.ini-production" "${PHP_INSTALL_PATH}/etc/php.ini"
 elif [ -f "${BUILD_PATH}/php-${APP_VERSION}/php.ini-development" ]; then
@@ -173,7 +188,7 @@ elif [ -f "${BUILD_PATH}/php-${APP_VERSION}/php.ini-development" ]; then
 elif [ -f "${PHP_INSTALL_PATH}/etc/php.ini-production" ]; then
     cp "${PHP_INSTALL_PATH}/etc/php.ini-production" "${PHP_INSTALL_PATH}/etc/php.ini"
 else
-    log_warn "源码包未提供 php.ini 模板，写入最小化 php.ini"
+    log_warn "Source package provides no php.ini template; writing a minimal php.ini"
     cat > "${PHP_INSTALL_PATH}/etc/php.ini" <<'PHPEOF'
 [PHP]
 memory_limit = 128M
@@ -214,7 +229,7 @@ listen = ${PHP_FPM_SOCK}
 listen.owner = www
 listen.group = www
 listen.mode = 0666
-;listen.allowed_clients = 127.0.0.1
+listen.allowed_clients = 127.0.0.1
 
 pm = ondemand
 pm.max_children = 2
@@ -230,12 +245,12 @@ env[TMPDIR] = /tmp
 EOF
 
 
-# ── systemd / init.d 服务 ─────────────────────────────────
+# ── systemd / init.d service ─────────────────────────────────
 if command -v systemctl >/dev/null 2>&1; then
     if [ -f "${BUILD_PATH}/php-${APP_VERSION}/sapi/fpm/php-fpm.service" ]; then
         cp "${BUILD_PATH}/php-${APP_VERSION}/sapi/fpm/php-fpm.service" "/etc/systemd/system/php-fpm-${PHP_SHORT_VERSION}.service"
     else
-        # 生成最小服务单元（部分发行版源码不含 php-fpm.service）
+        # Generate a minimal service unit (some distro sources don't ship php-fpm.service)
         cat > "/etc/systemd/system/php-fpm-${PHP_SHORT_VERSION}.service" <<EOF
 [Unit]
 Description=The PHP FastCGI Process Manager (PHP ${PHP_VERSION})
@@ -244,7 +259,7 @@ After=network.target
 [Service]
 Type=forking
 ExecStart=${PHP_INSTALL_PATH}/sbin/php-fpm -y ${PHP_INSTALL_PATH}/etc/php-fpm.conf
-ExecReload=/bin/kill -USR2 \\$MAINPID
+ExecReload=/bin/kill -USR2 \$MAINPID
 PrivateTmp=false
 
 [Install]
@@ -265,25 +280,26 @@ elif command -v chkconfig >/dev/null 2>&1; then
     service "php-fpm-${PHP_SHORT_VERSION}" start
 fi
 
-# ── 全局命令链接（表单选项 SET_DEFAULT=true 时注册为系统全局默认）──
-# SET_DEFAULT 由安装表单「设为全局默认 PHP」开关注入（true / false）。
-# 缺省按 true 处理，兼容旧版直接执行或快照未含该选项的安装（历史行为为无条件注册）。
+# ── Global command symlinks (when the form option SET_DEFAULT=true, register as the system-wide
+#    default PHP) ──
+# SET_DEFAULT is injected by the install form's "Set as global default PHP" toggle (true / false).
+# Defaults to true, for compatibility with older direct executions or installs whose snapshot lacks
+# this option (the historical behavior was to register unconditionally).
 if [ "${SET_DEFAULT:-true}" = "true" ]; then
     ln -sf "${PHP_INSTALL_PATH}/bin/php" /usr/local/bin/php
     ln -sf "${PHP_INSTALL_PATH}/bin/php-cgi" /usr/local/bin/php-cgi
-    ln -sf "${PHP_INSTALL_PATH}/bin/pear" /usr/local/bin/pear
-    ln -sf "${PHP_INSTALL_PATH}/bin/pecl" /usr/local/bin/pecl
     if [ ! -e /usr/bin/php ]; then
         ln -s "${PHP_INSTALL_PATH}/bin/php" /usr/bin/php
     fi
-    log_info "已将 PHP ${PHP_VERSION} 注册为全局默认（/usr/local/bin）"
+    log_info "Registered PHP ${PHP_VERSION} as the global default (/usr/local/bin)"
 else
-    log_info "未勾选「设为默认」，跳过 /usr/local/bin 注册，保留现有默认版本"
+    log_info "Default not selected; skipping /usr/local/bin registration, keeping the existing default version"
 fi
 
-# ── 登记实例信息(apps/<category>/<name>/info.yaml,供「已安装」展示)──────
-# svc_name=php-fpm-<主次拼接>(如 php-fpm-85,systemd unit 同名),状态探测与
-# 面板启停走 systemctl;pid_file 保留,作为无 systemd(chkconfig) 环境兜底探活。
+# ── Register instance info (apps/<category>/<name>/info.yaml, shown in "Installed") ──────
+# svc_name=php-fpm-<major+minor> (e.g. php-fpm-85, same as the systemd unit); status probing and
+# panel start/stop go through systemctl; pid_file is kept as a fallback liveness probe on systems
+# without systemd (chkconfig).
 ensure_dir "${APP_PATH}"
 cat > "${APP_PATH}/info.yaml" <<EOF
 svc_name: php-fpm-${PHP_SHORT_VERSION}
@@ -308,4 +324,4 @@ tags:
   - runtime
 EOF
 
-log_info "PHP ${APP_VERSION} installing successful"
+log_info "PHP ${APP_VERSION} installed successfully"
