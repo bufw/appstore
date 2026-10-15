@@ -12,24 +12,19 @@ scripts:
 options:
   install:
     intro: >-
-      请选择安装选项
+      Please select the PHP version to install.  php 7.4.33 has been deprecated and is no longer supported. 
     items:
       - name: SET_DEFAULT
-        label: 设为全局默认 PHP
+        label: Global Default
         type: bool
         default: false
-        desc: 注册php到 /usr/local/bin,所有用户执行 php 命令默认使用本版本；可在「服务配置 → PHP」页切换)。
+        desc: Create a symbolic link php to /usr/local/bin, You can switch it on the "Service Configuration → PHP" page.
       - name: EXTS
         type: multiselect
-        title: 扩展
-        desc: 选择需要安装的扩展
+        label: Extensions
+        desc: select the PHP extensions to install.  You can select multiple extensions.
         choices:
-          - label: bcmath
-            value: bcmath
-          - label: calendar
-            value: calendar
-          - label: exif
-            value: exif
-          - label: fileinfo
-            value: fileinfo
+          - label: pdo_postgresql
+            value: pdo_postgresql
+
         
