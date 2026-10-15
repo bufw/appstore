@@ -13,20 +13,16 @@ allow_multiple_instances: 'no'
 tags: [webserver]
 author: zap
 organization_name : zap
-actions:
-  build: Build
 scripts:
   install: install.sh
 options:
-  build:
+  install:
     - name: OPENSSL_VERSION
       label: OpenSSL Version
       type: select
       default: 3.5.6
       desc: Specify the OpenSSL version
       choices:
-        - label: 3.0.16
-          value: 3.0.16
         - label: 3.1.5
           value: 3.1.5
         - label: 3.5.6
@@ -38,5 +34,5 @@ options:
     - name: MODSECURITY
       label: ModSecurity(WAF)
       type: bool
-      default: false
+      default: true
       desc: Compile libmodsecurity and ModSecurity dynamic module, and deploy OWASP CRS rule set (by default, only logging without blocking). The dynamic module can only be added during compilation, and cannot be added later to an already installed nginx

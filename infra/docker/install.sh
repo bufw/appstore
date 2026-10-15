@@ -1,22 +1,21 @@
 #!/bin/bash
-# Docker 安装脚本（zap appstore 调用）
+# Docker installation script (invoked by zap appstore)
 #
-# 依赖环境变量（由 zapexec 注入）：ZAP_PATH APPS_DIR PKG_PATH APP_PATH APP_VERSION
-# 可选（options，值原样注入为同名环境变量）：
-#   INSTALL_RUNTIME   select —— docker（默认）/ podman，容器运行时
-#   INSTALL_MIRROR    select —— official（get.docker.com，默认）/ aliyun（--mirror Aliyun）
-#   INSTALL_CHANNEL   select —— stable（默认）/ test / nightly，Docker 发布通道（仅 docker）
-#   REGISTRY_MIRROR   string —— 镜像加速器地址，写入 /etc/docker/daemon.json
-#   DATA_ROOT         string —— 数据目录，默认 /var/lib/docker
-#   ENABLE_SERVICE    bool   —— "true" 时设置开机自启并立即启动（默认 true）
-#   JOIN_DOCKER_GROUP string —— 逗号分隔的用户名，加入 docker 组以去掉 sudo
+# Required environment variables (injected by zapexec): ZAP_PATH APPS_DIR PKG_PATH APP_PATH APP_VERSION
+# Optional (options, injected verbatim as same-named env vars):
+#   INSTALL_RUNTIME   select —— docker (default) / podman, container runtime
+#   INSTALL_MIRROR    select —— official (get.docker.com, default) / aliyun (--mirror Aliyun)
+#   INSTALL_CHANNEL   select —— stable (default) / test / nightly, Docker release channel (docker only)
+#   REGISTRY_MIRROR   string —— registry mirror URL, written to /etc/docker/daemon.json
+#   DATA_ROOT         string —— data directory, default /var/lib/docker
+#   ENABLE_SERVICE    bool   —— when "true", enable on boot and start immediately (default true)
+#   JOIN_DOCKER_GROUP string —— comma-separated usernames to add to the docker group to avoid sudo
 #
-# 说明：
-#   * 走 Docker 官方便捷脚本 get-docker.sh 安装：自动识别发行版并调用系统包管理器，
-#     比手工拼 apt/yum 的 docker-ce 版本字符串（含 5:28.5.1-1~ubuntu.24.04~noble 这种
-#     发行版相关后缀）可靠得多，且天然兼容 Ubuntu/Debian/RHEL 系。
-#   * systemd / openrc / sysvinit 三种 init 均会尝试设置开机自启。
-#   * 重复安装安全：zap 升级流程为「先 uninstall 再 install」，脚本可重复执行。
+# Notes:
+#   * Installs via Docker's official convenience script get-docker.sh: it auto-detects the
+#     distribution and invokes the system package manager.
+#   * All three init systems (systemd / openrc / sysvinit) are attempted for enabling on boot.
+#   * Safe to re-run: zap's upgrade flow is "uninstall first, then install", so this script is idempotent.
 set -euo pipefail
 
 source "${ZAP_PATH}/scripts/zap/bash_utils.sh"
@@ -24,7 +23,6 @@ source "${ZAP_PATH}/scripts/zap/bash_utils.sh"
 assert_root || exit 1
 
 INSTALL_RUNTIME="${INSTALL_RUNTIME:-docker}"
-# Podman 的 API socket（面板的容器列表等 Engine API 能力走它）
 PODMAN_SOCK="/run/podman/podman.sock"
 INSTALL_MIRROR="${INSTALL_MIRROR:-official}"
 INSTALL_CHANNEL="${INSTALL_CHANNEL:-stable}"
@@ -33,56 +31,51 @@ DATA_ROOT="${DATA_ROOT:-/var/lib/docker}"
 ENABLE_SERVICE="${ENABLE_SERVICE:-true}"
 JOIN_DOCKER_GROUP="${JOIN_DOCKER_GROUP:-}"
 
-# bash_utils 被 source 时已执行 os_detect，以下变量可直接用
-log_info "系统：${OS_PRETTY:-${OS_NAME:-unknown}}，架构：${OS_ARCH_ALIAS:-${OS_ARCH:-unknown}}"
+log_info "OS:${OS_PRETTY:-${OS_NAME:-unknown}},Arch:${OS_ARCH_ALIAS:-${OS_ARCH:-unknown}}"
 
-# ── 已安装检查（升级流程会先 uninstall 再 install，属正常）──
 if command -v docker >/dev/null 2>&1; then
-    log_warn "检测到已存在 docker：$(docker --version 2>/dev/null || echo unknown)，将覆盖安装"
+    log_warn "Docker is already installed: $(docker --version 2>/dev/null || echo unknown); the existing installation will be overwritten."
 fi
 
-# ── Podman 分支：没有守护进程、可 rootless，装完即结束 ──────
-#
-# 为什么单独一支：Podman 走系统包管理器而不是 get.docker.com，且面板的容器
-# 能力只有在 Podman 下才允许分配给普通用户（Docker 由 root 跑，无隔离）。
+# ── Podman branch: no daemon, supports rootless; done after install ──────
 if [ "${INSTALL_RUNTIME}" = "podman" ]; then
-    log_info "安装 Podman…"
+    log_info "Installing Podman…"
     if command -v podman >/dev/null 2>&1; then
-        log_warn "检测到已存在 podman：$(podman --version 2>/dev/null || echo unknown)，将覆盖安装"
+        log_warn "Podman is already installed: $(podman --version 2>/dev/null || echo unknown); the existing installation will be overwritten."
     fi
     PKG_MGR="$(pkg_manager)" || PKG_MGR=""
     if [ -z "${PKG_MGR}" ]; then
-        log_error "未识别的包管理器，无法安装 Podman"
+        log_error "Unrecognized package manager; cannot install Podman"
         exit 1
     fi
     if ! pkg_install_any "${PKG_MGR}" podman; then
-        log_error "Podman 安装失败（也可改用 Docker 运行时重装）"
+        log_error "Podman installation failed (you may retry using the Docker runtime instead)"
         exit 1
     fi
 
-    # compose：Podman 5 自带 `podman compose`；更早版本靠 podman-compose 顶上
+    # compose: Podman 5 ships `podman compose`; earlier versions fall back to podman-compose
     if ! podman compose version >/dev/null 2>&1; then
         pkg_install_any "${PKG_MGR}" podman-compose \
-            || log_warn "podman-compose 不可用：Compose 项目需要 Podman 5+，或自行安装 podman-compose"
+            || log_warn "podman-compose unavailable: Compose projects require Podman 5+, or install podman-compose manually"
     fi
 
-    # 面板的容器 API 走 podman.socket（compose 走 CLI，不受影响）
+    # The panel's container API uses podman.socket (compose goes through the CLI and is unaffected)
     if [ "${ENABLE_SERVICE}" = "true" ]; then
         if command -v systemctl >/dev/null 2>&1 && [ -d /run/systemd/system ]; then
             if systemctl enable --now podman.socket >/dev/null 2>&1; then
-                log_info "已启用 podman.socket（面板 API 走 ${PODMAN_SOCK}）"
+                log_info "Enabled podman.socket (panel API uses ${PODMAN_SOCK})"
             else
-                log_warn "podman.socket 启用失败，请手动执行：systemctl enable --now podman.socket"
+                log_warn "Failed to enable podman.socket; run manually: systemctl enable --now podman.socket"
             fi
         else
-            log_warn "非 systemd 系统，请自行启动 API 服务：podman system service --time=0 unix://${PODMAN_SOCK}"
+            log_warn "Non-systemd system; start the API service manually: podman system service --time=0 unix://${PODMAN_SOCK}"
         fi
     else
-        log_info "按要求未启用 podman.socket（ENABLE_SERVICE=false）"
+        log_info "podman.socket not enabled as requested (ENABLE_SERVICE=false)"
     fi
 
     if ! command -v podman >/dev/null 2>&1; then
-        log_error "Podman 安装失败：未找到 podman 命令"
+        log_error "Podman installation failed: podman command not found"
         exit 1
     fi
 
@@ -98,12 +91,12 @@ runtime: podman
 version: ${APP_VERSION:-latest}
 EOF
 
-    log_ok "Podman 安装成功：$(podman --version 2>/dev/null || echo unknown)"
-    log_info "请到面板「系统 → 运行环境」把「容器运行时」设为 podman：Docker 下容器由 root 运行，面板不会把容器能力分配给普通用户"
+    log_ok "Podman installed successfully: $(podman --version 2>/dev/null || echo unknown)"
+    log_info "Please set the container runtime to podman in System → Runtime: under Docker, containers run as root and the panel does not grant container capabilities to regular users"
     exit 0
 fi
 
-# ── 下载官方便捷安装脚本 ───────────────────────────────────
+# ── Download the official convenience install script ───────────────────────────────────
 INST_TMP="$(mktemp -d)"
 trap 'rm -rf "${INST_TMP}"' EXIT
 
@@ -111,55 +104,55 @@ MIRROR_ARG=""
 case "${INSTALL_MIRROR}" in
     aliyun)
         MIRROR_ARG="--mirror Aliyun"
-        log_info "安装源：阿里云镜像（get.docker.com --mirror Aliyun）"
+        log_info "Install source: Aliyun mirror (get.docker.com --mirror Aliyun)"
         ;;
     official)
-        log_info "安装源：官方（get.docker.com）"
+        log_info "Install source: official (get.docker.com)"
         ;;
     *)
-        log_warn "未知安装源「${INSTALL_MIRROR}」，回退官方源"
+        log_warn "Unknown install source \"${INSTALL_MIRROR}\"; falling back to the official source"
         ;;
 esac
 
-log_info "下载 Docker 安装脚本…"
+log_info "Downloading the Docker install script…"
 download_file "https://get.docker.com" "${INST_TMP}/get-docker.sh"
 
-# ── 版本 / 通道 ───────────────────────────────────────────
-# APP_VERSION 为 latest（或空）时不指定 VERSION，由脚本装该通道最新版
+# ── Version / channel ───────────────────────────────────────────
+# When APP_VERSION is "latest" (or empty), VERSION is not specified and the script installs the latest in that channel
 INSTALL_VERSION=""
 if [ "${APP_VERSION:-latest}" = "latest" ] || [ -z "${APP_VERSION:-}" ]; then
-    log_info "安装目标：${INSTALL_CHANNEL} 通道最新版"
+    log_info "Install target: latest in the ${INSTALL_CHANNEL} channel"
 else
     INSTALL_VERSION="${APP_VERSION}"
-    log_info "安装目标：${INSTALL_VERSION}（${INSTALL_CHANNEL} 通道）"
+    log_info "Install target: ${INSTALL_VERSION} (${INSTALL_CHANNEL} channel)"
 fi
 
-log_info "开始安装 Docker（约需 1–3 分钟）…"
+log_info "Starting Docker installation (about 1–3 minutes)…"
 # shellcheck disable=SC2086
 if ! VERSION="${INSTALL_VERSION}" CHANNEL="${INSTALL_CHANNEL}" \
         sh "${INST_TMP}/get-docker.sh" ${MIRROR_ARG}; then
-    log_error "Docker 安装失败"
-    log_error "国内网络可把「安装源」改为 aliyun 后重试"
+    log_error "Docker installation failed"
+    log_error "On networks in China, switch the install source to aliyun and retry"
     exit 1
 fi
 
 if ! command -v docker >/dev/null 2>&1; then
-    log_error "Docker 安装失败：未找到 docker 命令"
+    log_error "Docker installation failed: docker command not found"
     exit 1
 fi
 
-# ── daemon.json（仅在有自定义项时才写）────────────────────
+# ── daemon.json (written only when there are custom settings) ──────────────────────
 DAEMON_JSON="/etc/docker/daemon.json"
 ENTRIES=()
 
 if [ "${DATA_ROOT}" != "/var/lib/docker" ]; then
     ensure_dir "${DATA_ROOT}"
     ENTRIES+=("  \"data-root\": \"${DATA_ROOT}\"")
-    log_info "数据目录：${DATA_ROOT}"
+    log_info "Data directory: ${DATA_ROOT}"
 fi
 if [ -n "${REGISTRY_MIRROR}" ]; then
     ENTRIES+=("  \"registry-mirrors\": [\"${REGISTRY_MIRROR}\"]")
-    log_info "镜像加速器：${REGISTRY_MIRROR}"
+    log_info "Registry mirror: ${REGISTRY_MIRROR}"
 fi
 
 DAEMON_WRITTEN="no"
@@ -168,7 +161,7 @@ if [ "${#ENTRIES[@]}" -gt 0 ]; then
     if [ -f "${DAEMON_JSON}" ]; then
         BAK="${DAEMON_JSON}.zapbak.$(date +%Y%m%d%H%M%S)"
         cp -a "${DAEMON_JSON}" "${BAK}"
-        log_warn "已存在 ${DAEMON_JSON}，备份为 ${BAK} 后覆盖；原有自定义项请手动合并"
+        log_warn "${DAEMON_JSON} already exists; backed up to ${BAK} and overwritten. Merge existing custom settings manually"
     fi
     {
         printf '{\n'
@@ -184,68 +177,68 @@ if [ "${#ENTRIES[@]}" -gt 0 ]; then
         printf '\n}\n'
     } > "${DAEMON_JSON}"
     DAEMON_WRITTEN="yes"
-    log_info "已写入 ${DAEMON_JSON}"
+    log_info "Wrote ${DAEMON_JSON}"
 else
-    log_info "无需自定义配置，跳过 daemon.json"
+    log_info "No custom config needed; skipping daemon.json"
 fi
 
-# ── 开机自启与启动 ─────────────────────────────────────────
+# ── Enable on boot and start ─────────────────────────────────────────
 if [ "${ENABLE_SERVICE}" = "true" ]; then
     if command -v systemctl >/dev/null 2>&1 && [ -d /run/systemd/system ]; then
         if systemctl enable --now docker >/dev/null 2>&1; then
-            log_info "已设置开机自启并启动 docker（systemd）"
+            log_info "Enabled on boot and started docker (systemd)"
         else
-            log_warn "systemctl enable --now docker 失败，请手动执行：systemctl enable --now docker"
+            log_warn "systemctl enable --now docker failed; run manually: systemctl enable --now docker"
         fi
     elif command -v rc-update >/dev/null 2>&1; then
         rc-update add docker default >/dev/null 2>&1 || true
         if rc-service docker start >/dev/null 2>&1 || service docker start >/dev/null 2>&1; then
-            log_info "已设置开机自启并启动 docker（openrc）"
+            log_info "Enabled on boot and started docker (openrc)"
         else
-            log_warn "docker 启动失败，请手动执行：rc-service docker start"
+            log_warn "docker failed to start; run manually: rc-service docker start"
         fi
     elif command -v service >/dev/null 2>&1; then
         service docker start >/dev/null 2>&1 || true
-        log_info "已尝试启动 docker（sysvinit）"
+        log_info "Attempted to start docker (sysvinit)"
     else
-        log_warn "未识别的 init 系统，请手动启动 docker"
+        log_warn "Unrecognized init system; start docker manually"
     fi
 else
-    log_info "按要求未设置开机自启（ENABLE_SERVICE=false）"
+    log_info "On-boot enable skipped as requested (ENABLE_SERVICE=false)"
 fi
 
-# ── 免 sudo：把用户加入 docker 组 ──────────────────────────
+# ── add user to docker group ─────────────────────────────────────────────
 if [ -n "${JOIN_DOCKER_GROUP}" ]; then
     if ! ensure_group docker; then
-        log_warn "docker 组不可用，跳过加入用户"
+        log_warn "docker group is not available, skipping user addition"
     else
         IFS=',' read -ra GRANT_USERS <<< "${JOIN_DOCKER_GROUP}" || true
         for U in "${GRANT_USERS[@]}"; do
             U="$(printf '%s' "${U}" | tr -d '[:space:]')"
             [ -n "${U}" ] || continue
             if ! id "${U}" >/dev/null 2>&1; then
-                log_warn "用户 ${U} 不存在，跳过"
+                log_warn "User ${U} does not exist, skipping"
                 continue
             fi
             if ensure_usergroup "${U}" docker; then
-                log_info "已将用户 ${U} 加入 docker 组（重新登录后生效）"
+                log_info "User ${U} has been added to the docker group (effective after re-login)"
             else
-                log_warn "将用户 ${U} 加入 docker 组失败"
+                log_warn "Failed to add user ${U} to the docker group, please add manually: usermod -aG docker ${U}"
             fi
         done
     fi
 fi
 
-# ── 验证 ───────────────────────────────────────────────────
+# ── check ───────────────────────────────────────────────────
 if docker info >/dev/null 2>&1; then
-    log_ok "Docker 守护进程已就绪"
+    log_ok "Docker daemon has been started successfully"
 else
-    log_warn "docker info 未通过（守护进程可能未启动），请手动执行：systemctl start docker"
+    log_warn "docker info command failed; start docker manually: systemctl start docker"
 fi
 
 VER_LINE="$(docker --version 2>/dev/null || echo unknown)"
 
-# ── 登记实例信息（apps/<category>/<name>/info.yaml）────────
+# ── Register instance (apps/<category>/<name>/info.yaml) ────────
 ensure_dir "${APP_PATH}"
 cat > "${APP_PATH}/info.yaml" <<EOF
 svc_name: docker
@@ -264,4 +257,4 @@ data_root: ${DATA_ROOT}
 registry_mirror: ${REGISTRY_MIRROR}
 EOF
 
-log_info "Docker 安装成功：${VER_LINE}"
+log_info "Docker installation successful: ${VER_LINE}"
